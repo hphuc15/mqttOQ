@@ -21,24 +21,24 @@ const (
 	Disconnect  ControlPacketType = 0x0E // Client is disconnecting
 )
 
-type ConnectReturnCode byte
+type ConnectionReturnCode byte
 
 const (
-	ConnectionAccepted                 ConnectReturnCode = 0x00 // Connection accepted
-	ConnectionRefusedProtocolVersion   ConnectReturnCode = 0x01 // The Server does not support the level of the MQTT protocol requested by the Client
-	ConnectionRefusedIdentifier        ConnectReturnCode = 0x02 // The Client identifier is correct UTF-8 but not allowed by the Server
-	ConnectionRefusedServerUnavailable ConnectReturnCode = 0x03 // The Network Connection has been made but the MQTT service is unavailable
-	ConnectionRefusedBadCredentials    ConnectReturnCode = 0x04 // The data in the user name or password is malformed
-	ConnectionRefusedNotAuthorized     ConnectReturnCode = 0x05 // The Client is not authorized to connect
+	ConnectionAccepted                  ConnectionReturnCode = 0x00 // Connection accepted
+	ConnectionRefusedProtocolVersion    ConnectionReturnCode = 0x01 // The Server does not support the level of the MQTT protocol requested by the Client
+	ConnectionRefusedIdentifierRejected ConnectionReturnCode = 0x02 // The Client identifier is correct UTF-8 but not allowed by the Server
+	ConnectionRefusedServerUnavailable  ConnectionReturnCode = 0x03 // The Network Connection has been made but the MQTT service is unavailable
+	ConnectionRefusedBadCredentials     ConnectionReturnCode = 0x04 // The data in the user name or password is malformed
+	ConnectionRefusedNotAuthorized      ConnectionReturnCode = 0x05 // The Client is not authorized to connect
 )
 
-func (c ConnectReturnCode) Error() string {
+func (c ConnectionReturnCode) Error() string {
 	switch c {
 	case ConnectionAccepted:
 		return "Connection accepted"
 	case ConnectionRefusedProtocolVersion:
 		return "Connection refused: The Server does not support the level of the MQTT protocol requested by the Client"
-	case ConnectionRefusedIdentifier:
+	case ConnectionRefusedIdentifierRejected:
 		return "Connection refused: The Client identifier is correct UTF-8 but not allowed by the Server"
 	case ConnectionRefusedServerUnavailable:
 		return "Connection refused: The Network Connection has been made but the MQTT service is unavailable"
@@ -51,7 +51,7 @@ func (c ConnectReturnCode) Error() string {
 	}
 }
 
-func (c ConnectReturnCode) Err() error {
+func (c ConnectionReturnCode) Err() error {
 	if c == ConnectionAccepted {
 		return nil
 	}

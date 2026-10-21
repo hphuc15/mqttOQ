@@ -5,6 +5,7 @@ import (
 	"fmt"
 )
 
+// encodeBytes prepends a 2-byte big-endian length to field (truncated to 65,535 bytes).
 func encodeBytes(field []byte) []byte {
 	// Attempting to encode more than 65,535 bytes would lead to an unexpected 16-bit length and extra data written
 	// (which would be parsed as later parts of the message). The safest option is to truncate.
@@ -26,11 +27,17 @@ func encodeUint16(n uint16) []byte {
 	return uint16Bytes
 }
 
+// true=00000001, false=00000000
 func flagMask(f bool) byte {
 	if f {
 		return 1
 	}
 	return 0
+}
+
+// check the bit `position` if it on
+func decodeFlagMask(b byte, position uint8) bool {
+	return ((b >> position) & 1) == 1
 }
 
 func encodeRemainingLength(l int) ([]byte, error) {
