@@ -20,26 +20,29 @@ type Client struct {
 	stream     *quic.Stream
 }
 
-func New(clientID string, keepAlive time.Duration, tlsConfig tls.Config) *Client {
+func New(clientID string, keepAlive time.Duration, tlsConfig *tls.Config) *Client {
+	cfg := &tls.Config{}
+	if tlsConfig != nil {
+		cfg = tlsConfig.Clone()
+	}
+	cfg.NextProtos = []string{"mqtt"}
 
-	tlsConfig = *tlsConfig.Clone()
-	tlsConfig.NextProtos = []string{"mqtt"}
-
-	var newClient Client
-	newClient.clientID = clientID
-	newClient.keepAlive = keepAlive
-	newClient.tlsConfig = &tlsConfig
-	return &newClient
+	return &Client{
+		clientID:  clientID,
+		keepAlive: keepAlive,
+		tlsConfig: cfg,
+	}
 }
 
 func (c *Client) Connect(ctx context.Context, addr string) error {
-	conn, e := quic.DialAddrEarly(ctx, addr, c.tlsConfig, c.quicConfig)
+	conn, e := quic.DialAddr(ctx, addr, c.tlsConfig, c.quicConfig)
 	if e != nil {
 		return e
 	}
 
 	stream, e := conn.OpenStreamSync(ctx)
 	if e != nil {
+		_ = conn.CloseWithError(0, "open stream failed")
 		return e
 	}
 
