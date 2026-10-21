@@ -42,10 +42,12 @@ type ConnectPacket struct {
 	Password        []byte
 }
 
-func (c *ConnectPacket) Encode() ([]byte, error) {
+// Encode validates the packet and appends its encoded bytes to *out.
+// On error, *out is left unchanged.
+func (c *ConnectPacket) Encode(out *[]byte) error {
 	e := c.validate()
 	if e != nil {
-		return nil, e
+		return e
 	}
 	c.FixedHeader = FixedHeader{Type: byte(Connect)}
 
@@ -72,13 +74,12 @@ func (c *ConnectPacket) Encode() ([]byte, error) {
 
 	fixedHeaderBytes, e := c.encodeFixedHeader(bodyBytes.Len())
 	if e != nil {
-		return nil, e
+		return e
 	}
 
-	var connectPacketBytes bytes.Buffer
-	connectPacketBytes.Write(fixedHeaderBytes)
-	connectPacketBytes.Write(bodyBytes.Bytes())
-	return connectPacketBytes.Bytes(), e
+	*out = append(*out, fixedHeaderBytes...)
+	*out = append(*out, bodyBytes.Bytes()...)
+	return nil
 }
 
 func (c *ConnectPacket) validate() error {
