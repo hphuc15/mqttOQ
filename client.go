@@ -53,7 +53,8 @@ func (c *Client) Connect(ctx context.Context, addr string) error {
 		KeepAlive:       uint16(c.keepAlive / time.Second),
 	}
 
-	data, e := cp.Encode()
+	var data []byte
+	e = cp.Encode(&data)
 	if e != nil {
 		_ = conn.CloseWithError(ConnectionCloseNormal, "encode failed")
 		return e
