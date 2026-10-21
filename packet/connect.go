@@ -47,6 +47,8 @@ func (c *ConnectPacket) Encode() ([]byte, error) {
 	if e != nil {
 		return nil, e
 	}
+	c.FixedHeader = FixedHeader{Type: byte(Connect)}
+
 	var bodyBytes bytes.Buffer
 	flagsByte := flagMask(c.UserNameFlag)<<7 | flagMask(c.PasswordFlag)<<6 | flagMask(c.WillRetain)<<5 | c.WillQos<<3 | flagMask(c.WillFlag)<<2 | flagMask(c.CleanSession)<<1
 
