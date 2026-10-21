@@ -59,6 +59,12 @@ func encodeRemainingLength(l int) ([]byte, error) {
 	}
 }
 
+// func decodeRemainingLength()
+
+func getType(packetBytes []byte) ControlPacketType {
+	return ControlPacketType(packetBytes[0]) >> 4
+}
+
 // type utf8estring struct {
 // 	StringLength  uint16
 // 	CharacterData string
