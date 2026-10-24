@@ -1,119 +1,134 @@
-package packet
+package packet2
 
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
+	"math"
 )
 
-// encodeBytes prepends a 2-byte big-endian length to field (truncated to 65,535 bytes).
-func encodeBytes(field []byte) []byte {
-	// Attempting to encode more than 65,535 bytes would lead to an unexpected 16-bit length and extra data written
-	// (which would be parsed as later parts of the message). The safest option is to truncate.
-	if len(field) > 65535 {
-		field = field[0:65535]
+func writeUint8(w io.Writer, n uint8) error {
+	_, e := w.Write([]byte{n})
+	if e != nil {
+		return e
 	}
-	fieldLength := make([]byte, 2)
-	binary.BigEndian.PutUint16(fieldLength, uint16(len(field)))
-	return append(fieldLength, field...)
+	return nil
 }
 
-func encodeString(s string) []byte {
-	return encodeBytes([]byte(s))
+func writeUint16(w io.Writer, n uint16) error {
+	var buf [2]byte
+	binary.BigEndian.PutUint16(buf[:], n)
+	_, e := w.Write(buf[:])
+	return e
 }
 
-func encodeUint16(n uint16) []byte {
-	uint16Bytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(uint16Bytes, n)
-	return uint16Bytes
+func readUint16(r io.Reader) (uint16, error) {
+	var buf [2]byte
+	_, e := io.ReadFull(r, buf[:])
+	if e != nil {
+		return 0, e
+	}
+
+	return binary.BigEndian.Uint16(buf[:]), nil
 }
 
-// true=00000001, false=00000000
-func flagMask(f bool) byte {
-	if f {
-		return 1
+func writeString(w io.Writer, s string) error {
+	length := uint16(len(s))
+
+	// Write string content
+	if length > 0 {
+		_, e := w.Write([]byte(s))
+		return e
+	}
+	return nil
+}
+
+func readByte(r io.Reader) (byte, error) {
+	var b [1]byte
+	_, e := io.ReadFull(r, b[:])
+	if e != nil {
+		return 0, e
+	}
+	return b[0], nil
+}
+
+func encodeString(w io.Writer, s string) error {
+	length := len(s)
+	if length > math.MaxUint16 {
+		return fmt.Errorf("string too long: %d bytes (max %d)", len(s), math.MaxUint16)
+	}
+	// Write string length
+	e := writeUint16(w, uint16(length))
+	if e != nil {
+		return e
+	}
+	// Write string content
+	if length > 0 {
+		_, e = w.Write([]byte(s))
+		return e
+	}
+	return nil
+}
+
+func flagBitMaskToBool(b byte, position uint8) bool {
+	return ((b >> position) & 0x01) == 1
+}
+
+func flagBoolToBitMask(flag bool, position uint8) byte {
+	if flag {
+		return 1 << position
 	}
 	return 0
 }
 
-// check the bit `position` if it on
-func decodeFlagMask(b byte, position uint8) bool {
-	return ((b >> position) & 1) == 1
-}
-
-func encodeRemainingLength(l int) ([]byte, error) {
-	if l < 0 || l > 268435455 {
-		return nil, fmt.Errorf("invalid remaining length: %d", l)
+// encodeBytes writes MQTT Binary Data: a Two Byte Integer length
+// followed by that many bytes (0 to 65,535).
+func encodeBytes(w io.Writer, data []byte) error {
+	length := len(data)
+	if length > math.MaxUint16 {
+		return fmt.Errorf("binary data too long: %d bytes (max %d)", length, math.MaxUint16)
 	}
 
-	var lengthBytes []byte
-	for {
-		b := byte(l % 128)
-		l /= 128
-		if l > 0 {
-			b |= 0x80
-		}
-		lengthBytes = append(lengthBytes, b)
-		if l == 0 {
-			return lengthBytes, nil
+	e := writeUint16(w, uint16(length))
+	if e != nil {
+		return e
+	}
+
+	if length > 0 {
+		_, e = w.Write(data)
+		return e
+	}
+	return nil
+}
+
+// decodeBytes reads MQTT Binary Data: a Two Byte Integer length
+// followed by that many bytes.
+func decodeBytes(r io.Reader) ([]byte, error) {
+	length, e := readUint16(r)
+	if e != nil {
+		return nil, e
+	}
+	buf := make([]byte, length)
+	if length > 0 {
+		if _, e = io.ReadFull(r, buf); e != nil {
+			return nil, e
 		}
 	}
+	return buf, nil
 }
 
-// func decodeRemainingLength()
-
-func getType(packetBytes []byte) ControlPacketType {
-	return ControlPacketType(packetBytes[0]) >> 4
+func decodeString(r io.Reader) (string, error) {
+	length, e := readUint16(r)
+	if e != nil {
+		return "", e
+	}
+	if length == 0 {
+		return "", nil
+	}
+	buf := make([]byte, length)
+	_, e = io.ReadFull(r, buf)
+	if e != nil {
+		return "", e
+	}
+	return string(buf), nil
 }
-
-// type utf8estring struct {
-// 	StringLength  uint16
-// 	CharacterData string
-// }
-
-// func ToUTF8String(s string) ([]byte, error) {
-// 	if len(s) > 65535 {
-// 		return nil, fmt.Errorf("Exceeds 65535 bytes.")
-// 	}
-// 	if !utf8.ValidString(s) || strings.ContainsRune(s, 0) {
-// 		return nil, errors.New("String is not valid MQTT UTF-8")
-// 	}
-
-// 	out := make([]byte, 2+len(s))
-// 	binary.BigEndian.PutUint16(out, uint16(len(s)))
-// 	copy(out[2:], s)
-
-// 	return out, nil
-// }
-
-// func writeBytes(buf *bytes.Buffer, b []byte) error {
-// 	if len(b) > 65535 {
-// 		return fmt.Errorf("data exceeds 65535 bytes: %d", len(b))
-// 	}
-// 	buf.WriteByte(byte(len(b) >> 8))
-// 	buf.WriteByte(byte(len(b)))
-// 	buf.Write(b)
-// 	return nil
-// }
-
-// func writeUTF8String(buf *bytes.Buffer, s string) error {
-// 	stringLength := len(s)
-// 	if stringLength > 65535 {
-// 		return fmt.Errorf("Exceeds 65535 byte.")
-// 	}
-
-// 	buf.WriteByte(byte(stringLength >> 8))
-// 	buf.WriteByte(byte(stringLength))
-// 	buf.Write([]byte(s))
-// 	return nil
-// }
-
-// func encodeBytes(field []byte) []byte {
-// 	// Attempting to encode more than 65,535 bytes would lead to an unexpected 16-bit length and extra data written
-// 	// (which would be parsed as later parts of the message). The safest option is to truncate.
-// 	if len(field) > 65535 {
-// 		field = field[0:65535]
-// 	}
-// 	fieldLength := make([]byte, 2)
-// 	binary.BigEndian.PutUint16(fieldLength, uint16(len(field)))
-// 	return append(fieldLength, field...)
-// }

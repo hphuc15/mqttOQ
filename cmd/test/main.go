@@ -11,7 +11,7 @@ import (
 
 func main() {
 	// InsecureSkipVerify only because the test broker likely uses a self-signed cert.
-	c := mqttOQ.New("test-client", 60*time.Second, &tls.Config{InsecureSkipVerify: true})
+	c := mqttOQ.NewClient("test-client", 60*time.Second, &tls.Config{InsecureSkipVerify: true})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

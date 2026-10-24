@@ -20,7 +20,7 @@ type Client struct {
 	stream     *quic.Stream
 }
 
-func New(clientID string, keepAlive time.Duration, tlsConfig *tls.Config) *Client {
+func NewClient(clientID string, keepAlive time.Duration, tlsConfig *tls.Config) *Client {
 	cfg := &tls.Config{}
 	if tlsConfig != nil {
 		cfg = tlsConfig.Clone()
