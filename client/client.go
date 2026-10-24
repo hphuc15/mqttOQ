@@ -109,7 +109,7 @@ func (c *Client) connectTransport(ctx context.Context) error {
 
 	stream, e := conn.OpenStreamSync(ctx)
 	if e != nil {
-		conn.Close()
+		conn.CloseWithError(0, "")
 		return fmt.Errorf("failed to open QUIC stream: %w", e)
 	}
 
@@ -117,16 +117,36 @@ func (c *Client) connectTransport(ctx context.Context) error {
 	c.stream = stream
 
 	cPacket := &packet.ConnectPacket{
-		ClientIdentifer: c.cfgs.Credentials.ClientID,
-		CleanSession:    c.cfgs.Session.CleanSession,
-		KeepAlive:       c.cfgs.Session.KeepAlive,
-		UserName:        c.cfgs.Credentials.UserName,
-		Password:        []byte(c.cfgs.Credentials.Password),
-		WillFlag:        c.cfgs.Session.WillTopic != "",
-		WillMessage:     c.cfgs.Session.WillMessage,
-		WillQos:         c.cfgs.Session.WillQoS,
-		WillRetain:      c.cfgs.Session.WillRetain,
+		ClientIdentifier: c.cfgs.Credentials.ClientID,
+		CleanSession:     c.cfgs.Session.CleanSession,
+		KeepAlive:        c.cfgs.Session.KeepAlive,
+		UserName:         c.cfgs.Credentials.UserName,
+		Password:         []byte(c.cfgs.Credentials.Password),
+		WillFlag:         c.cfgs.Session.WillTopic != "",
+		WillMessage:      c.cfgs.Session.WillMessage,
+		WillQos:          c.cfgs.Session.WillQoS,
+		WillRetain:       c.cfgs.Session.WillRetain,
 	}
 
-	e := cPacket.Encode()
+	e = cPacket.Encode(stream)
+	if e != nil {
+		c.cleanupTransport()
+		return fmt.Errorf("encode CONNECT error: %w", e)
+	}
+
+	// Receive CONNACK response will be implement here:
+	// ......
+
+	return nil
+}
+
+func (c *Client) cleanupTransport() {
+	if c.stream != nil {
+		_ = c.stream.Close()
+		c.stream = nil
+	}
+	if c.conn != nil {
+		_ = c.conn.CloseWithError(0, "")
+		c.conn = nil
+	}
 }
