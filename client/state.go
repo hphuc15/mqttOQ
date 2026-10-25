@@ -20,3 +20,7 @@ type atomicState struct {
 func (a *atomicState) CompareAndSwap(oldState, newState ConnectionState) bool {
 	return atomic.CompareAndSwapInt32(&a.state, int32(oldState), int32(newState))
 }
+
+func (a *atomicState) Set(newState ConnectionState) {
+	atomic.StoreInt32(&a.state, int32(newState))
+}

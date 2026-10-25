@@ -47,8 +47,16 @@ type ClientConfig struct {
 	QUICConfig  *quic.Config
 }
 
+type ClientConfig2 struct {
+	ClientID string
+	Conn     quic.Conn
+	// Conn     net.Conn
+	// Session  session.SessionManager
+
+}
+
 type Client struct {
-	cfgs   ClientConfig
+	config ClientConfig
 	conn   *quic.Conn
 	stream *quic.Stream
 	state  *atomicState
@@ -58,21 +66,21 @@ const ClientDafaultClientID = "mqttOQ-client-%d"
 const ClientDafaultKeepAlive = uint16(120) // seconds
 const ClientDafaulConnectTimeout = 10 * time.Second
 
-func NewClient(cfgs ClientConfig) *Client {
-	if cfgs.Credentials.ClientID == "" {
-		cfgs.Credentials.ClientID = fmt.Sprintf(ClientDafaultClientID, time.Now().UnixNano())
+func NewClient(config ClientConfig) *Client {
+	if config.Credentials.ClientID == "" {
+		config.Credentials.ClientID = fmt.Sprintf(ClientDafaultClientID, time.Now().UnixNano())
 	}
 
-	if cfgs.Session.KeepAlive == 0 {
-		cfgs.Session.KeepAlive = ClientDafaultKeepAlive
+	if config.Session.KeepAlive == 0 {
+		config.Session.KeepAlive = ClientDafaultKeepAlive
 	}
 
-	if cfgs.Network.ConnectTimeout == 0 {
-		cfgs.Network.ConnectTimeout = ClientDafaulConnectTimeout
+	if config.Network.ConnectTimeout == 0 {
+		config.Network.ConnectTimeout = ClientDafaulConnectTimeout
 	}
 
 	return &Client{
-		cfgs: cfgs,
+		config: config,
 		// ...
 	}
 }
@@ -90,19 +98,27 @@ var (
 // 		return ErrAlreadyConnected
 // 	}
 
-// 	e := c.
+// 	e := c.connectTransport(ctx)
+// 	if e != nil {
+// 		c.state.Set(StateDisconnected)
+// 		return e
+// 	}
+
+// 	c.state.Set(StateConnected)
+
+// 	c.clo
 
 // 	return nil
 // }
 
 // connectTransport performs the QUIC dial and sends the MQTT CONNECT packet.
 func (c *Client) connectTransport(ctx context.Context) error {
-	tlsConfig := c.cfgs.TLSConfig
+	tlsConfig := c.config.TLSConfig
 	if tlsConfig == nil {
 		tlsConfig = transport.NewClientTLSConfig(true, "mqtt")
 	}
 
-	conn, e := transport.Dial(ctx, c.cfgs.Broker.Address, tlsConfig, c.cfgs.QUICConfig)
+	conn, e := transport.Dial(ctx, c.config.Broker.Address, tlsConfig, c.config.QUICConfig)
 	if e != nil {
 		return fmt.Errorf("QUIC dial error: %w", e)
 	}
@@ -117,15 +133,15 @@ func (c *Client) connectTransport(ctx context.Context) error {
 	c.stream = stream
 
 	cPacket := &packet.ConnectPacket{
-		ClientIdentifier: c.cfgs.Credentials.ClientID,
-		CleanSession:     c.cfgs.Session.CleanSession,
-		KeepAlive:        c.cfgs.Session.KeepAlive,
-		UserName:         c.cfgs.Credentials.UserName,
-		Password:         []byte(c.cfgs.Credentials.Password),
-		WillFlag:         c.cfgs.Session.WillTopic != "",
-		WillMessage:      c.cfgs.Session.WillMessage,
-		WillQos:          c.cfgs.Session.WillQoS,
-		WillRetain:       c.cfgs.Session.WillRetain,
+		ClientIdentifier: c.config.Credentials.ClientID,
+		CleanSession:     c.config.Session.CleanSession,
+		KeepAlive:        c.config.Session.KeepAlive,
+		UserName:         c.config.Credentials.UserName,
+		Password:         []byte(c.config.Credentials.Password),
+		WillFlag:         c.config.Session.WillTopic != "",
+		WillMessage:      c.config.Session.WillMessage,
+		WillQos:          c.config.Session.WillQoS,
+		WillRetain:       c.config.Session.WillRetain,
 	}
 
 	e = cPacket.Encode(stream)
@@ -136,6 +152,23 @@ func (c *Client) connectTransport(ctx context.Context) error {
 
 	// Receive CONNACK response will be implement here:
 	// ......
+	// Read CONNACK synchronously with timeout
+	respPacket, e := packet.ReadPacket(stream)
+	if e != nil {
+		c.cleanupTransport()
+		return fmt.Errorf("read CONNACK error: %w", e)
+	}
+
+	connack, ok := respPacket.(*packet.ConnackPacket)
+	if !ok {
+		c.cleanupTransport()
+		return fmt.Errorf("expected CONNACK packet, got %s", respPacket.Type())
+	}
+
+	if connack.ReturnCode != packet.AcceptedConnection {
+		c.cleanupTransport()
+		return fmt.Errorf("connection refused: %s", connack.ReturnCode)
+	}
 
 	return nil
 }
