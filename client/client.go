@@ -60,9 +60,11 @@ type Client struct {
 	closeOnce  sync.Once
 	wg         sync.WaitGroup
 
-	ackMu      sync.RWMutex
-	ackWaiters map[uint16]chan packet.ControlPacket
-	pingRespCh chan struct{}
+	ackMu        sync.RWMutex
+	ackWaiters   map[uint16]chan packet.ControlPacket
+	pingRespCh   chan struct{}
+	pidMu        sync.Mutex
+	lastPacketID uint16
 }
 
 const (
