@@ -7,14 +7,10 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-// type ClientConnection struct {
-// 	conn *quic.Conn
-// }
-
-// Dial initiates a QUIC connection to the target address
+// Dial initiates a standard 1-RTT QUIC connection to the target address.
 func Dial(ctx context.Context, addr string, tlsConfig *tls.Config, quicConfig *quic.Config) (*quic.Conn, error) {
 	if tlsConfig == nil {
-		tlsConfig = NewClientTLSConfig(true, "mqtt")
+		tlsConfig = NewClientTLSConfig(true, "localhost")
 	}
 	if quicConfig == nil {
 		quicConfig = &quic.Config{
@@ -22,32 +18,37 @@ func Dial(ctx context.Context, addr string, tlsConfig *tls.Config, quicConfig *q
 		}
 	}
 
-	conn, e := quic.DialAddr(ctx, addr, tlsConfig, quicConfig)
-	if e != nil {
-		return nil, e
+	conn, err := quic.DialAddr(ctx, addr, tlsConfig, quicConfig)
+	if err != nil {
+		return nil, err
 	}
 	return conn, nil
 }
 
-// // OpenStream opens a new bidirectional QUIC stream asynchronously.
-// func (c *ClientConnection) OpenStream() (*StreamConn, error) {
-// 	stream, err := c.conn.OpenStream()
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	return NewStreamConn(stream, c.conn), nil
-// }
+// DialEarly initiates a 0-RTT QUIC connection to the target address if session tickets are available.
+func DialEarly(ctx context.Context, addr string, tlsConfig *tls.Config, quicConfig *quic.Config) (*quic.Conn, error) {
+	if tlsConfig == nil {
+		tlsConfig = NewClientTLSConfig(true, "localhost")
+	}
+	if quicConfig == nil {
+		quicConfig = &quic.Config{
+			EnableDatagrams: false,
+		}
+	}
 
-// // OpenStreamSync opens a new bidirectional QUIC stream, waiting if flow control limit is hit.
-// func (c *ClientConnection) OpenStreamSync(ctx context.Context) (*StreamConn, error) {
-// 	stream, err := c.conn.OpenStreamSync(ctx)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	return NewStreamConn(stream, c.conn), nil
-// }
+	conn, err := quic.DialAddrEarly(ctx, addr, tlsConfig, quicConfig)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
 
-// // Close closes the QUIC connection gracefully.
-// func (c *ClientConnection) Close() error {
-// 	return c.conn.CloseWithError(0, "client closed")
-// }
+// Listen starts a QUIC listener on the given address.
+func Listen(addr string, tlsConfig *tls.Config, quicConfig *quic.Config) (*quic.Listener, error) {
+	if quicConfig == nil {
+		quicConfig = &quic.Config{
+			EnableDatagrams: false,
+		}
+	}
+	return quic.ListenAddr(addr, tlsConfig, quicConfig)
+}
