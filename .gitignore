@@ -1,1 +1,4 @@
+**/private/
+**/private.*/
 **/tests/
+**/*test.go
