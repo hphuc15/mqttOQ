@@ -81,12 +81,17 @@ func (c *Client) SubscribeMultiple(ctx context.Context, subscriptions []Subscrip
 			}
 		}
 
-		// Register handlers upon successful subscription
-		if handler != nil {
-			for _, sub := range subscriptions {
+		// Register handlers upon successful subscription and track active subscriptions
+		c.subMu.Lock()
+		for _, sub := range subscriptions {
+			if handler != nil {
 				c.RegisterRoute(sub.Topic, handler)
 			}
+			if c.subscriptions != nil {
+				c.subscriptions[sub.Topic] = sub.QoS
+			}
 		}
+		c.subMu.Unlock()
 
 		return nil
 
@@ -132,10 +137,15 @@ func (c *Client) Unsubscribe(ctx context.Context, topics ...string) error {
 			return fmt.Errorf("expected UNSUBACK for packet ID %d, got %s", pid, resp.Type())
 		}
 
-		// Unregister route handlers for unsubscribed topics
+		// Unregister route handlers for unsubscribed topics and remove from active subscriptions
+		c.subMu.Lock()
 		for _, t := range topics {
 			c.UnregisterRoute(t)
+			if c.subscriptions != nil {
+				delete(c.subscriptions, t)
+			}
 		}
+		c.subMu.Unlock()
 
 		return nil
 

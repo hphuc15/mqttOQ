@@ -34,9 +34,11 @@ type ClientSession struct {
 }
 
 type ClientNetwork struct {
-	ConnectTimeout    time.Duration
-	AutoReconnect     bool
-	ReconnectInterval time.Duration
+	ConnectTimeout       time.Duration
+	AutoReconnect        bool
+	ReconnectInterval    time.Duration
+	MaxReconnectInterval time.Duration
+	Enable0RTT           bool
 }
 
 type ClientConfig struct {
@@ -66,6 +68,8 @@ type Client struct {
 	dispatcher *messageDispatcher
 	closeCh    chan struct{}
 	closeOnce  sync.Once
+	stopCh     chan struct{}
+	stopOnce   sync.Once
 	wg         sync.WaitGroup
 
 	ackMu        sync.RWMutex
@@ -73,6 +77,14 @@ type Client struct {
 	pingRespCh   chan struct{}
 	pidMu        sync.Mutex
 	lastPacketID uint16
+
+	inflight      *inflightManager
+	subMu         sync.RWMutex
+	subscriptions map[string]byte
+
+	reconnectMu     sync.Mutex
+	isReconnecting  bool
+	dialTransportFn func(ctx context.Context, early bool) (streamRW, error)
 }
 
 const (
@@ -99,16 +111,27 @@ func NewClient(config ClientConfig) *Client {
 		config.Network.ConnectTimeout = ClientDefaultConnectTimeout
 	}
 
+	if config.Network.ReconnectInterval == 0 {
+		config.Network.ReconnectInterval = 1 * time.Second
+	}
+
+	if config.Network.MaxReconnectInterval == 0 {
+		config.Network.MaxReconnectInterval = 30 * time.Second
+	}
+
 	if config.TLSConfig == nil {
 		config.TLSConfig = transport.NewClientTLSConfig(true, "mqtt")
 	}
 
 	return &Client{
-		config:     config,
-		state:      newAtomicState(StateDisconnected),
-		dispatcher: newDispatcher(config.DefaultMessageHandler),
-		closeCh:    make(chan struct{}),
-		ackWaiters: make(map[uint16]chan packet.ControlPacket),
+		config:        config,
+		state:         newAtomicState(StateDisconnected),
+		dispatcher:    newDispatcher(config.DefaultMessageHandler),
+		closeCh:       make(chan struct{}),
+		stopCh:        make(chan struct{}),
+		ackWaiters:    make(map[uint16]chan packet.ControlPacket),
+		inflight:      newInflightManager(),
+		subscriptions: make(map[string]byte),
 	}
 }
 
@@ -178,27 +201,44 @@ func (c *Client) connectTransport(ctx context.Context) error {
 		tlsConfig = transport.NewClientTLSConfig(true, "mqtt")
 	}
 
-	conn, e := transport.Dial(ctx, c.config.Broker.Address, tlsConfig, c.config.QUICConfig)
-	if e != nil {
-		return fmt.Errorf("QUIC dial error: %w", e)
+	var conn *quic.Conn
+	var stream streamRW
+	var e error
+
+	if c.dialTransportFn != nil {
+		stream, e = c.dialTransportFn(ctx, false)
+		if e != nil {
+			return e
+		}
+	} else {
+		conn, e = transport.Dial(ctx, c.config.Broker.Address, tlsConfig, c.config.QUICConfig)
+		if e != nil {
+			return fmt.Errorf("QUIC dial error: %w", e)
+		}
+
+		s, streamErr := conn.OpenStreamSync(ctx)
+		if streamErr != nil {
+			_ = conn.CloseWithError(0, "")
+			return fmt.Errorf("failed to open QUIC stream: %w", streamErr)
+		}
+		stream = s
+		c.conn = conn
 	}
 
-	stream, e := conn.OpenStreamSync(ctx)
-	if e != nil {
-		conn.CloseWithError(0, "")
-		return fmt.Errorf("failed to open QUIC stream: %w", e)
-	}
-
-	c.conn = conn
 	c.stream = stream
 
 	cPacket := &packet.ConnectPacket{
+		ProtocolName:     "MQTT",
+		ProtocolLevel:    4,
 		ClientIdentifier: c.config.Credentials.ClientID,
 		CleanSession:     c.config.Session.CleanSession,
 		KeepAlive:        c.config.Session.KeepAlive,
+		UserNameFlag:     c.config.Credentials.UserName != "",
 		UserName:         c.config.Credentials.UserName,
+		PasswordFlag:     c.config.Credentials.Password != "",
 		Password:         []byte(c.config.Credentials.Password),
 		WillFlag:         c.config.Session.WillTopic != "",
+		WillTopic:        c.config.Session.WillTopic,
 		WillMessage:      c.config.Session.WillMessage,
 		WillQos:          c.config.Session.WillQoS,
 		WillRetain:       c.config.Session.WillRetain,
@@ -329,9 +369,15 @@ func (c *Client) handleIncomingPacket(pkt packet.ControlPacket) {
 		go c.dispatcher.dispatch(c, msg)
 
 	case *packet.PubackPacket:
+		if c.inflight != nil {
+			c.inflight.remove(p.PacketIdentifier)
+		}
 		c.notifyAckWaiter(p.PacketIdentifier, p)
 
 	case *packet.PubrecPacket:
+		if c.inflight != nil {
+			c.inflight.updateState(p.PacketIdentifier, inflightWaitPubcomp)
+		}
 		c.notifyAckWaiter(p.PacketIdentifier, p)
 
 	case *packet.PubrelPacket:
@@ -339,6 +385,9 @@ func (c *Client) handleIncomingPacket(pkt packet.ControlPacket) {
 		_ = c.sendPacket(&packet.PubcompPacket{PacketIdentifier: p.PacketIdentifier})
 
 	case *packet.PubcompPacket:
+		if c.inflight != nil {
+			c.inflight.remove(p.PacketIdentifier)
+		}
 		c.notifyAckWaiter(p.PacketIdentifier, p)
 
 	case *packet.SubackPacket:
@@ -359,7 +408,14 @@ func (c *Client) handleIncomingPacket(pkt packet.ControlPacket) {
 
 func (c *Client) handleUnexpectedDisconnect() {
 	c.cleanupTransport()
+	if c.state.Load() == StateClosed {
+		return
+	}
 	c.state.Set(StateDisconnected)
+
+	if c.config.Network.AutoReconnect {
+		c.triggerReconnect()
+	}
 }
 
 func (c *Client) cleanupTransport() {

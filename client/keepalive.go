@@ -73,6 +73,10 @@ func (c *Client) Disconnect(ctx context.Context) error {
 		return ErrNotConnected
 	}
 
+	c.stopOnce.Do(func() {
+		close(c.stopCh)
+	})
+
 	// Best-effort send of the DISCONNECT packet; ignore write errors because
 	// we will close the transport immediately afterwards.
 	_ = c.sendPacket(&packet.DisconnectPacket{})
@@ -95,6 +99,18 @@ func (c *Client) Disconnect(ctx context.Context) error {
 		return ctx.Err()
 	}
 
+	c.state.Set(StateDisconnected)
+	return nil
+}
+
+// Close permanently shuts down the client, canceling any pending reconnection
+// and freeing transport resources.
+func (c *Client) Close() error {
+	c.state.Set(StateClosed)
+	c.stopOnce.Do(func() {
+		close(c.stopCh)
+	})
+	c.cleanupTransport()
 	c.state.Set(StateDisconnected)
 	return nil
 }

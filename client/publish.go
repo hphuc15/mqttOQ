@@ -93,8 +93,15 @@ func (c *Client) publishQoS1(ctx context.Context, topic string, retain bool, pay
 		Payload:          payload,
 	}
 
+	if c.inflight != nil {
+		c.inflight.add(pid, pkt, inflightWaitPuback)
+		defer c.inflight.remove(pid)
+	}
+
 	if err := c.sendPacket(pkt); err != nil {
-		return err
+		if !c.config.Network.AutoReconnect {
+			return err
+		}
 	}
 
 	select {
@@ -106,6 +113,21 @@ func (c *Client) publishQoS1(ctx context.Context, topic string, retain bool, pay
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.closeCh:
+		if !c.config.Network.AutoReconnect {
+			return ErrConnectionClosed
+		}
+		select {
+		case resp := <-ackCh:
+			if _, ok := resp.(*packet.PubackPacket); !ok {
+				return fmt.Errorf("expected PUBACK for packet ID %d, got %s", pid, resp.Type())
+			}
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.stopCh:
+			return ErrConnectionClosed
+		}
+	case <-c.stopCh:
 		return ErrConnectionClosed
 	}
 }
@@ -125,9 +147,16 @@ func (c *Client) publishQoS2(ctx context.Context, topic string, retain bool, pay
 		Payload:          payload,
 	}
 
+	if c.inflight != nil {
+		c.inflight.add(pid, pkt, inflightWaitPubrec)
+		defer c.inflight.remove(pid)
+	}
+
 	// Step 1: Send PUBLISH
 	if err := c.sendPacket(pkt); err != nil {
-		return err
+		if !c.config.Network.AutoReconnect {
+			return err
+		}
 	}
 
 	// Step 2: Await PUBREC
@@ -139,13 +168,32 @@ func (c *Client) publishQoS2(ctx context.Context, topic string, retain bool, pay
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.closeCh:
+		if !c.config.Network.AutoReconnect {
+			return ErrConnectionClosed
+		}
+		select {
+		case resp := <-ackCh:
+			if _, ok := resp.(*packet.PubrecPacket); !ok {
+				return fmt.Errorf("expected PUBREC for packet ID %d, got %s", pid, resp.Type())
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.stopCh:
+			return ErrConnectionClosed
+		}
+	case <-c.stopCh:
 		return ErrConnectionClosed
 	}
 
 	// Step 3: Send PUBREL
+	if c.inflight != nil {
+		c.inflight.updateState(pid, inflightWaitPubcomp)
+	}
 	pubrel := &packet.PubrelPacket{PacketIdentifier: pid}
 	if err := c.sendPacket(pubrel); err != nil {
-		return err
+		if !c.config.Network.AutoReconnect {
+			return err
+		}
 	}
 
 	// Step 4: Await PUBCOMP
@@ -158,6 +206,21 @@ func (c *Client) publishQoS2(ctx context.Context, topic string, retain bool, pay
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.closeCh:
+		if !c.config.Network.AutoReconnect {
+			return ErrConnectionClosed
+		}
+		select {
+		case resp := <-ackCh:
+			if _, ok := resp.(*packet.PubcompPacket); !ok {
+				return fmt.Errorf("expected PUBCOMP for packet ID %d, got %s", pid, resp.Type())
+			}
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.stopCh:
+			return ErrConnectionClosed
+		}
+	case <-c.stopCh:
 		return ErrConnectionClosed
 	}
 }
