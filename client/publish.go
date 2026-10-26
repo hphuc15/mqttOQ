@@ -1,0 +1,163 @@
+package client
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/hphuc15/mqttOQ/packet"
+)
+
+var (
+	ErrInvalidQoS   = errors.New("invalid QoS level: must be 0, 1, or 2")
+	ErrInvalidTopic = errors.New("invalid topic name: cannot be empty or contain wildcards (+, #)")
+)
+
+// nextPacketID generates the next available non-zero 16-bit packet identifier.
+func (c *Client) nextPacketID() uint16 {
+	c.pidMu.Lock()
+	defer c.pidMu.Unlock()
+
+	for {
+		c.lastPacketID++
+		if c.lastPacketID == 0 {
+			c.lastPacketID = 1
+		}
+
+		c.ackMu.RLock()
+		_, inUse := c.ackWaiters[c.lastPacketID]
+		c.ackMu.RUnlock()
+
+		if !inUse {
+			return c.lastPacketID
+		}
+	}
+}
+
+// Publish sends an MQTT message to the specified topic with the given QoS and retain flag.
+func (c *Client) Publish(ctx context.Context, topic string, qos byte, retain bool, payload []byte) error {
+	if !c.IsConnected() {
+		return ErrNotConnected
+	}
+
+	if qos > 2 {
+		return ErrInvalidQoS
+	}
+
+	if topic == "" || strings.ContainsAny(topic, "+#") {
+		return ErrInvalidTopic
+	}
+
+	switch packet.QualityOfService(qos) {
+	case packet.QoS0:
+		return c.publishQoS0(topic, retain, payload)
+	case packet.QoS1:
+		return c.publishQoS1(ctx, topic, retain, payload)
+	case packet.QoS2:
+		return c.publishQoS2(ctx, topic, retain, payload)
+	default:
+		return ErrInvalidQoS
+	}
+}
+
+// PublishMessage publishes a Message struct instance.
+func (c *Client) PublishMessage(ctx context.Context, msg Message) error {
+	return c.Publish(ctx, msg.Topic, msg.QoS, msg.Retained, msg.Payload)
+}
+
+func (c *Client) publishQoS0(topic string, retain bool, payload []byte) error {
+	pkt := &packet.PublishPacket{
+		Config: packet.PublishOthersConfig{
+			QosLevel: packet.QoS0,
+			Retain:   retain,
+		},
+		TopicName: topic,
+		Payload:   payload,
+	}
+	return c.sendPacket(pkt)
+}
+
+func (c *Client) publishQoS1(ctx context.Context, topic string, retain bool, payload []byte) error {
+	pid := c.nextPacketID()
+	ackCh := c.registerAckWaiter(pid)
+	defer c.unregisterAckWaiter(pid)
+
+	pkt := &packet.PublishPacket{
+		Config: packet.PublishOthersConfig{
+			QosLevel: packet.QoS1,
+			Retain:   retain,
+		},
+		TopicName:        topic,
+		PacketIdentifier: pid,
+		Payload:          payload,
+	}
+
+	if err := c.sendPacket(pkt); err != nil {
+		return err
+	}
+
+	select {
+	case resp := <-ackCh:
+		if _, ok := resp.(*packet.PubackPacket); !ok {
+			return fmt.Errorf("expected PUBACK for packet ID %d, got %s", pid, resp.Type())
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closeCh:
+		return ErrConnectionClosed
+	}
+}
+
+func (c *Client) publishQoS2(ctx context.Context, topic string, retain bool, payload []byte) error {
+	pid := c.nextPacketID()
+	ackCh := c.registerAckWaiter(pid)
+	defer c.unregisterAckWaiter(pid)
+
+	pkt := &packet.PublishPacket{
+		Config: packet.PublishOthersConfig{
+			QosLevel: packet.QoS2,
+			Retain:   retain,
+		},
+		TopicName:        topic,
+		PacketIdentifier: pid,
+		Payload:          payload,
+	}
+
+	// Step 1: Send PUBLISH
+	if err := c.sendPacket(pkt); err != nil {
+		return err
+	}
+
+	// Step 2: Await PUBREC
+	select {
+	case resp := <-ackCh:
+		if _, ok := resp.(*packet.PubrecPacket); !ok {
+			return fmt.Errorf("expected PUBREC for packet ID %d, got %s", pid, resp.Type())
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closeCh:
+		return ErrConnectionClosed
+	}
+
+	// Step 3: Send PUBREL
+	pubrel := &packet.PubrelPacket{PacketIdentifier: pid}
+	if err := c.sendPacket(pubrel); err != nil {
+		return err
+	}
+
+	// Step 4: Await PUBCOMP
+	select {
+	case resp := <-ackCh:
+		if _, ok := resp.(*packet.PubcompPacket); !ok {
+			return fmt.Errorf("expected PUBCOMP for packet ID %d, got %s", pid, resp.Type())
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closeCh:
+		return ErrConnectionClosed
+	}
+}
