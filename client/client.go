@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -39,6 +40,7 @@ type ClientNetwork struct {
 	ReconnectInterval    time.Duration
 	MaxReconnectInterval time.Duration
 	Enable0RTT           bool
+	EnableMultiStream    bool
 }
 
 type ClientConfig struct {
@@ -64,7 +66,7 @@ type Client struct {
 	state      *atomicState
 	writeMu    sync.Mutex
 	conn       *quic.Conn
-	stream     streamRW
+	stream     streamRW // Control stream (primary stream)
 	dispatcher *messageDispatcher
 	closeCh    chan struct{}
 	closeOnce  sync.Once
@@ -85,6 +87,10 @@ type Client struct {
 	reconnectMu     sync.Mutex
 	isReconnecting  bool
 	dialTransportFn func(ctx context.Context, early bool) (streamRW, error)
+
+	opener     streamOpener
+	dataMu     sync.Mutex
+	dataStream streamRW
 }
 
 const (
@@ -153,6 +159,47 @@ func (c *Client) Config() ClientConfig {
 	return c.config
 }
 
+// LocalAddr returns the local network address of the underlying QUIC connection.
+func (c *Client) LocalAddr() net.Addr {
+	if c.conn != nil {
+		return c.conn.LocalAddr()
+	}
+	return nil
+}
+
+// RemoteAddr returns the remote network address of the underlying QUIC connection.
+func (c *Client) RemoteAddr() net.Addr {
+	if c.conn != nil {
+		return c.conn.RemoteAddr()
+	}
+	return nil
+}
+
+// Conn returns the underlying QUIC connection (or nil if disconnected).
+func (c *Client) Conn() *quic.Conn {
+	return c.conn
+}
+
+// MigratePath migrates the client's connection to a new network path using the provided transport.
+func (c *Client) MigratePath(ctx context.Context, newTransport *quic.Transport) error {
+	if c.conn == nil {
+		return ErrNotConnected
+	}
+	path, err := c.conn.AddPath(newTransport)
+	if err != nil {
+		return fmt.Errorf("failed to add path: %w", err)
+	}
+	if err := path.Probe(ctx); err != nil {
+		_ = path.Close()
+		return fmt.Errorf("failed to probe path: %w", err)
+	}
+	if err := path.Switch(); err != nil {
+		_ = path.Close()
+		return fmt.Errorf("failed to switch path: %w", err)
+	}
+	return nil
+}
+
 // RegisterRoute registers a message handler for a specific topic filter.
 func (c *Client) RegisterRoute(topicFilter string, handler MessageHandler) {
 	c.dispatcher.register(topicFilter, handler)
@@ -189,6 +236,9 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	c.startReaderLoop()
 	c.startKeepAlive()
+	if c.config.Network.EnableMultiStream {
+		c.startAcceptStreamLoop()
+	}
 	c.state.Set(StateConnected)
 
 	return nil
@@ -223,6 +273,7 @@ func (c *Client) connectTransport(ctx context.Context) error {
 		}
 		stream = s
 		c.conn = conn
+		c.opener = &quicStreamOpener{conn: conn}
 	}
 
 	c.stream = stream
@@ -422,6 +473,13 @@ func (c *Client) cleanupTransport() {
 	c.closeOnce.Do(func() {
 		close(c.closeCh)
 	})
+
+	c.dataMu.Lock()
+	if c.dataStream != nil {
+		_ = c.dataStream.Close()
+		c.dataStream = nil
+	}
+	c.dataMu.Unlock()
 
 	if c.stream != nil {
 		_ = c.stream.Close()

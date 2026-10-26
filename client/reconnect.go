@@ -145,7 +145,7 @@ func (c *Client) resubscribeActive() {
 		Subscriptions:    subs,
 	}
 
-	if err := c.sendPacket(pkt); err != nil {
+	if err := c.sendControlPacket(pkt); err != nil {
 		return
 	}
 
@@ -167,7 +167,7 @@ func (c *Client) resendInflightMessages() {
 	if c.inflight == nil {
 		return
 	}
-	_ = c.inflight.retryAll(c.sendPacket)
+	_ = c.inflight.retryAll(c.sendDataPacket)
 }
 
 // Subscriptions returns a copy of currently tracked active topic subscriptions.

@@ -41,6 +41,7 @@ func (c *Client) connectTransportEarly(ctx context.Context) error {
 		}
 		stream = s
 		c.conn = conn
+		c.opener = &quicStreamOpener{conn: conn}
 	}
 
 	c.stream = stream

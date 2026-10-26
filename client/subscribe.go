@@ -60,7 +60,7 @@ func (c *Client) SubscribeMultiple(ctx context.Context, subscriptions []Subscrip
 		Subscriptions:    pktSubs,
 	}
 
-	if err := c.sendPacket(pkt); err != nil {
+	if err := c.sendControlPacket(pkt); err != nil {
 		return err
 	}
 
@@ -127,7 +127,7 @@ func (c *Client) Unsubscribe(ctx context.Context, topics ...string) error {
 		TopicFilters:     topics,
 	}
 
-	if err := c.sendPacket(pkt); err != nil {
+	if err := c.sendControlPacket(pkt); err != nil {
 		return err
 	}
 

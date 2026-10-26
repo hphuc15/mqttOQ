@@ -40,7 +40,7 @@ func (c *Client) keepAliveLoop(interval time.Duration) {
 
 		case <-ticker.C:
 			// Send PINGREQ
-			if err := c.sendPacket(&packet.PingreqPacket{}); err != nil {
+			if err := c.sendControlPacket(&packet.PingreqPacket{}); err != nil {
 				// Transport error: trigger disconnect and exit.
 				c.handleUnexpectedDisconnect()
 				return
@@ -79,7 +79,7 @@ func (c *Client) Disconnect(ctx context.Context) error {
 
 	// Best-effort send of the DISCONNECT packet; ignore write errors because
 	// we will close the transport immediately afterwards.
-	_ = c.sendPacket(&packet.DisconnectPacket{})
+	_ = c.sendControlPacket(&packet.DisconnectPacket{})
 
 	// Signal all background goroutines (readLoop, keepAliveLoop) to exit.
 	c.cleanupTransport()

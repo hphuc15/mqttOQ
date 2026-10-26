@@ -75,7 +75,7 @@ func (c *Client) publishQoS0(topic string, retain bool, payload []byte) error {
 		TopicName: topic,
 		Payload:   payload,
 	}
-	return c.sendPacket(pkt)
+	return c.sendDataPacket(pkt)
 }
 
 func (c *Client) publishQoS1(ctx context.Context, topic string, retain bool, payload []byte) error {
@@ -98,7 +98,7 @@ func (c *Client) publishQoS1(ctx context.Context, topic string, retain bool, pay
 		defer c.inflight.remove(pid)
 	}
 
-	if err := c.sendPacket(pkt); err != nil {
+	if err := c.sendDataPacket(pkt); err != nil {
 		if !c.config.Network.AutoReconnect {
 			return err
 		}
@@ -153,7 +153,7 @@ func (c *Client) publishQoS2(ctx context.Context, topic string, retain bool, pay
 	}
 
 	// Step 1: Send PUBLISH
-	if err := c.sendPacket(pkt); err != nil {
+	if err := c.sendDataPacket(pkt); err != nil {
 		if !c.config.Network.AutoReconnect {
 			return err
 		}
@@ -190,7 +190,7 @@ func (c *Client) publishQoS2(ctx context.Context, topic string, retain bool, pay
 		c.inflight.updateState(pid, inflightWaitPubcomp)
 	}
 	pubrel := &packet.PubrelPacket{PacketIdentifier: pid}
-	if err := c.sendPacket(pubrel); err != nil {
+	if err := c.sendDataPacket(pubrel); err != nil {
 		if !c.config.Network.AutoReconnect {
 			return err
 		}
