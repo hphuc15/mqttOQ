@@ -15,6 +15,10 @@ var (
 )
 
 // nextPacketID generates the next available non-zero 16-bit packet identifier.
+// Per MQTT 3.1.1 section 2.3.1, a packet ID MUST NOT be reused while there
+// is an unacknowledged packet with the same ID outstanding. This includes both
+// IDs that have a registered ack waiter (current in-progress calls) and IDs
+// that are tracked by the inflightManager (messages surviving a reconnect).
 func (c *Client) nextPacketID() uint16 {
 	c.pidMu.Lock()
 	defer c.pidMu.Unlock()
@@ -25,13 +29,21 @@ func (c *Client) nextPacketID() uint16 {
 			c.lastPacketID = 1
 		}
 
+		pid := c.lastPacketID
+
 		c.ackMu.RLock()
-		_, inUse := c.ackWaiters[c.lastPacketID]
+		_, inAckWaiters := c.ackWaiters[pid]
 		c.ackMu.RUnlock()
 
-		if !inUse {
-			return c.lastPacketID
+		if inAckWaiters {
+			continue
 		}
+
+		if c.inflight != nil && c.inflight.contains(pid) {
+			continue
+		}
+
+		return pid
 	}
 }
 

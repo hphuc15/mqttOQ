@@ -86,6 +86,15 @@ func (m *inflightManager) get(pid uint16) (*inflightMessage, bool) {
 	return msg, ok
 }
 
+// contains reports whether the given packet ID is currently tracked as in-flight.
+func (m *inflightManager) contains(pid uint16) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	_, ok := m.messages[pid]
+	return ok
+}
+
 // retryAll resends all in-flight messages over the provided sendFn.
 // Per MQTT 3.1.1 Section 3.3.1.1:
 // - Retried PUBLISH packets MUST have the DUP flag set to 1.
