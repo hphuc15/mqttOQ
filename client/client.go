@@ -60,27 +60,56 @@ type Client struct {
 	stream *quic.Stream
 }
 
-const ClientDafaultClientID = "mqttOQ-client-%d"
-const ClientDafaultKeepAlive = uint16(120) // seconds
-const ClientDafaulConnectTimeout = 10 * time.Second
+const (
+	ClientDefaultClientID       = "mqttOQ-client-%d"
+	ClientDefaultKeepAlive      = uint16(120) // seconds
+	ClientDefaultConnectTimeout = 10 * time.Second
+
+	// Backward-compatible aliases for legacy spellings
+	ClientDafaultClientID       = ClientDefaultClientID
+	ClientDafaultKeepAlive      = ClientDefaultKeepAlive
+	ClientDafaulConnectTimeout  = ClientDefaultConnectTimeout
+)
 
 func NewClient(config ClientConfig) *Client {
 	if config.Credentials.ClientID == "" {
-		config.Credentials.ClientID = fmt.Sprintf(ClientDafaultClientID, time.Now().UnixNano())
+		config.Credentials.ClientID = fmt.Sprintf(ClientDefaultClientID, time.Now().UnixNano())
 	}
 
 	if config.Session.KeepAlive == 0 {
-		config.Session.KeepAlive = ClientDafaultKeepAlive
+		config.Session.KeepAlive = ClientDefaultKeepAlive
 	}
 
 	if config.Network.ConnectTimeout == 0 {
-		config.Network.ConnectTimeout = ClientDafaulConnectTimeout
+		config.Network.ConnectTimeout = ClientDefaultConnectTimeout
+	}
+
+	if config.TLSConfig == nil {
+		config.TLSConfig = transport.NewClientTLSConfig(true, "mqtt")
 	}
 
 	return &Client{
 		config: config,
-		// ...
+		state:  newAtomicState(StateDisconnected),
 	}
+}
+
+// State returns the current connection lifecycle state.
+func (c *Client) State() ConnectionState {
+	if c.state == nil {
+		return StateDisconnected
+	}
+	return c.state.Load()
+}
+
+// IsConnected returns true if the client is currently connected.
+func (c *Client) IsConnected() bool {
+	return c.State() == StateConnected
+}
+
+// Config returns the configuration of the client.
+func (c *Client) Config() ClientConfig {
+	return c.config
 }
 
 var (
