@@ -40,24 +40,29 @@ type ClientNetwork struct {
 }
 
 type ClientConfig struct {
-	Broker      ClientBroker
-	Credentials ClientCredentials
-	Session     ClientSession
-	Network     ClientNetwork
-	TLSConfig   *tls.Config
-	QUICConfig  *quic.Config
-
-	// Option:
-	// Conn        *quic.Conn
+	Broker               ClientBroker
+	Credentials          ClientCredentials
+	Session              ClientSession
+	Network              ClientNetwork
+	TLSConfig            *tls.Config
+	QUICConfig           *quic.Config
+	DefaultMessageHandler MessageHandler
 }
 
 type Client struct {
-	config  ClientConfig
-	state   *atomicState
-	writeMu sync.Mutex
-	// mu      sync.RWMutex
-	conn   *quic.Conn
-	stream *quic.Stream
+	config     ClientConfig
+	state      *atomicState
+	writeMu    sync.Mutex
+	conn       *quic.Conn
+	stream     *quic.Stream
+	dispatcher *messageDispatcher
+	closeCh    chan struct{}
+	closeOnce  sync.Once
+	wg         sync.WaitGroup
+
+	ackMu      sync.RWMutex
+	ackWaiters map[uint16]chan packet.ControlPacket
+	pingRespCh chan struct{}
 }
 
 const (
@@ -89,8 +94,11 @@ func NewClient(config ClientConfig) *Client {
 	}
 
 	return &Client{
-		config: config,
-		state:  newAtomicState(StateDisconnected),
+		config:     config,
+		state:      newAtomicState(StateDisconnected),
+		dispatcher: newDispatcher(config.DefaultMessageHandler),
+		closeCh:    make(chan struct{}),
+		ackWaiters: make(map[uint16]chan packet.ControlPacket),
 	}
 }
 
@@ -112,6 +120,21 @@ func (c *Client) Config() ClientConfig {
 	return c.config
 }
 
+// RegisterRoute registers a message handler for a specific topic filter.
+func (c *Client) RegisterRoute(topicFilter string, handler MessageHandler) {
+	c.dispatcher.register(topicFilter, handler)
+}
+
+// UnregisterRoute unregisters a message handler for a topic filter.
+func (c *Client) UnregisterRoute(topicFilter string) {
+	c.dispatcher.unregister(topicFilter)
+}
+
+// SetDefaultMessageHandler sets or replaces the default fallback message handler.
+func (c *Client) SetDefaultMessageHandler(handler MessageHandler) {
+	c.dispatcher.setDefaultHandler(handler)
+}
+
 var (
 	ErrAlreadyConnected   = errors.New("client is already connected")
 	ErrNotConnected       = errors.New("client is not connected")
@@ -131,14 +154,13 @@ func (c *Client) Connect(ctx context.Context) error {
 		return e
 	}
 
+	c.startReaderLoop()
 	c.state.Set(StateConnected)
 
 	return nil
 }
 
 // connectTransport performs the QUIC dial and sends the MQTT CONNECT packet.
-// Note: this func wait for received CONNACK packet then the client can be send next packet.
-// I want to reduce latency of this so i will refactor to async
 func (c *Client) connectTransport(ctx context.Context) error {
 	tlsConfig := c.config.TLSConfig
 	if tlsConfig == nil {
@@ -177,8 +199,6 @@ func (c *Client) connectTransport(ctx context.Context) error {
 		return fmt.Errorf("encode CONNECT error: %w", e)
 	}
 
-	// Receive CONNACK response will be implement here:
-	// ......
 	// Read CONNACK synchronously with timeout
 	respPacket, e := packet.ReadPacket(stream)
 	if e != nil {
@@ -200,13 +220,148 @@ func (c *Client) connectTransport(ctx context.Context) error {
 	return nil
 }
 
+func (c *Client) sendPacket(pkt packet.ControlPacket) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if c.stream == nil {
+		return ErrConnectionClosed
+	}
+
+	return pkt.Encode(c.stream)
+}
+
+func (c *Client) registerAckWaiter(packetID uint16) chan packet.ControlPacket {
+	c.ackMu.Lock()
+	defer c.ackMu.Unlock()
+
+	ch := make(chan packet.ControlPacket, 1)
+	c.ackWaiters[packetID] = ch
+	return ch
+}
+
+func (c *Client) unregisterAckWaiter(packetID uint16) {
+	c.ackMu.Lock()
+	defer c.ackMu.Unlock()
+
+	delete(c.ackWaiters, packetID)
+}
+
+func (c *Client) notifyAckWaiter(packetID uint16, pkt packet.ControlPacket) {
+	c.ackMu.RLock()
+	ch, ok := c.ackWaiters[packetID]
+	c.ackMu.RUnlock()
+
+	if ok && ch != nil {
+		select {
+		case ch <- pkt:
+		default:
+		}
+	}
+}
+
+func (c *Client) startReaderLoop() {
+	c.closeOnce = sync.Once{}
+	c.closeCh = make(chan struct{})
+	c.wg.Add(1)
+	go c.readLoop()
+}
+
+func (c *Client) readLoop() {
+	defer c.wg.Done()
+
+	for {
+		select {
+		case <-c.closeCh:
+			return
+		default:
+		}
+
+		if c.stream == nil {
+			return
+		}
+
+		pkt, err := packet.ReadPacket(c.stream)
+		if err != nil {
+			select {
+			case <-c.closeCh:
+				return
+			default:
+				c.handleUnexpectedDisconnect()
+				return
+			}
+		}
+
+		c.handleIncomingPacket(pkt)
+	}
+}
+
+func (c *Client) handleIncomingPacket(pkt packet.ControlPacket) {
+	switch p := pkt.(type) {
+	case *packet.PublishPacket:
+		msg := Message{
+			Topic:     p.TopicName,
+			Payload:   p.Payload,
+			QoS:       byte(p.Config.QosLevel),
+			Retained:  p.Config.Retain,
+			Duplicate: p.Config.DupFlag,
+		}
+
+		// Acknowledge QoS 1 and QoS 2 inbound packets
+		if p.Config.QosLevel == packet.QoS1 {
+			_ = c.sendPacket(&packet.PubackPacket{PacketIdentifier: p.PacketIdentifier})
+		} else if p.Config.QosLevel == packet.QoS2 {
+			_ = c.sendPacket(&packet.PubrecPacket{PacketIdentifier: p.PacketIdentifier})
+		}
+
+		// Dispatch message asynchronously so readLoop is never blocked
+		go c.dispatcher.dispatch(c, msg)
+
+	case *packet.PubackPacket:
+		c.notifyAckWaiter(p.PacketIdentifier, p)
+
+	case *packet.PubrecPacket:
+		c.notifyAckWaiter(p.PacketIdentifier, p)
+
+	case *packet.PubrelPacket:
+		// QoS 2 inbound step 2: reply with PUBCOMP
+		_ = c.sendPacket(&packet.PubcompPacket{PacketIdentifier: p.PacketIdentifier})
+
+	case *packet.PubcompPacket:
+		c.notifyAckWaiter(p.PacketIdentifier, p)
+
+	case *packet.SubackPacket:
+		c.notifyAckWaiter(p.PacketIdentifier, p)
+
+	case *packet.UnsubackPacket:
+		c.notifyAckWaiter(p.PacketIdentifier, p)
+
+	case *packet.PingrespPacket:
+		if c.pingRespCh != nil {
+			select {
+			case c.pingRespCh <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+func (c *Client) handleUnexpectedDisconnect() {
+	c.cleanupTransport()
+	c.state.Set(StateDisconnected)
+}
+
 func (c *Client) cleanupTransport() {
+	c.closeOnce.Do(func() {
+		close(c.closeCh)
+	})
+
 	if c.stream != nil {
 		_ = c.stream.Close()
 		c.stream = nil
 	}
 	if c.conn != nil {
-		_ = c.conn.CloseWithError(0, "")
+		_ = c.conn.CloseWithError(0, "client disconnected")
 		c.conn = nil
 	}
 }
