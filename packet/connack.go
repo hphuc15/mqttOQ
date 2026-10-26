@@ -13,7 +13,7 @@ import (
 type ConnackReturnCode byte
 
 const (
-	Accepted                  ConnackReturnCode = 0x00 // Connection Accepted.
+	AcceptedConnection        ConnackReturnCode = 0x00 // Connection Accepted.
 	RefusedProtocolVersion    ConnackReturnCode = 0x01 // The Server does not support the level of the MQTT protocol requested by the Client.
 	RefusedIdentifierRejected ConnackReturnCode = 0x02 // The Client identifier is correct UTF-8 but not allowed by the Server.
 	RefusedServerUnavailable  ConnackReturnCode = 0x03 // The Network Connection has been made but the MQTT service is unavailable.
@@ -24,7 +24,7 @@ const (
 // String returns human-readable description of return code.
 func (rc ConnackReturnCode) String() string {
 	switch rc {
-	case Accepted:
+	case AcceptedConnection:
 		return "Connection Accepted"
 	case RefusedProtocolVersion:
 		return "Connection Refused, unacceptable protocol version"

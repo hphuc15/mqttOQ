@@ -2,7 +2,16 @@ package packet
 
 import (
 	"errors"
+	"fmt"
 	"io"
+)
+
+// Common packet errors.
+var (
+	ErrorMalformedRemainingLength = errors.New("malformed remaining length in packet header")
+	ErrorInvalidPacketType        = errors.New("invalid or unknown MQTT packet type")
+	ErrorProtocolViolation        = errors.New("MQTT protocol violation")
+	ErrorPayloadTooShort          = errors.New("payload shorter than declared length")
 )
 
 type ControlPacketType byte
@@ -25,12 +34,16 @@ const (
 )
 
 type FixedHeader struct {
-	Type         byte
+	Type         ControlPacketType
 	Flags        byte
 	RemainLength uint32
 }
 
 type ControlPacket interface {
+	// Type returns the MQTT control packet type.
+	Type() ControlPacketType
+	// Flags returns the packet-specific 4-bit flags for Fixed Header byte 1.
+	Flags() byte
 	// Encode writes the entire packet (Fixed Header + Variable Header + Payload) into the writer.
 	Encode(w io.Writer) error
 	// Decode reads the packet's fixed header, variable header and payload from reader with given remaining length.
@@ -105,7 +118,7 @@ func DecodeFixedHeader(r io.Reader) (*FixedHeader, error) {
 	flags := typeAndFlagsByte[0] & 0x0F
 
 	return &FixedHeader{
-		Type:         controlPacketType,
+		Type:         ControlPacketType(controlPacketType),
 		Flags:        flags,
 		RemainLength: remainLength,
 	}, nil
@@ -119,4 +132,52 @@ func EncodeFixedHeader(w io.Writer, pType ControlPacketType, flags byte, remainL
 		return e
 	}
 	return EncodeRemainLength(w, remainLength)
+}
+
+// ReadPacket reads and decodes the next complete MQTT packet from the reader.
+func ReadPacket(r io.Reader) (ControlPacket, error) {
+	fh, e := DecodeFixedHeader(r)
+	if e != nil {
+		return nil, e
+	}
+
+	var pkt ControlPacket
+	switch fh.Type {
+	case CONNECT:
+		pkt = &ConnectPacket{}
+	case CONNACK:
+		pkt = &ConnackPacket{}
+	case PUBLISH:
+		pkt = &PublishPacket{Config: PublishOthersConfig{FixedHeaderFlags: fh.Flags}}
+	case PUBACK:
+		pkt = &PubackPacket{}
+	case PUBREC:
+		pkt = &PubrecPacket{}
+	case PUBREL:
+		pkt = &PubrelPacket{}
+	case PUBCOMP:
+		pkt = &PubcompPacket{}
+	case SUBSCRIBE:
+		pkt = &SubscribePacket{}
+	case SUBACK:
+		pkt = &SubackPacket{}
+	case UNSUBSCRIBE:
+		pkt = &UnsubscribePacket{}
+	case UNSUBACK:
+		pkt = &UnsubackPacket{}
+	case PINGREQ:
+		pkt = &PingreqPacket{}
+	case PINGRESP:
+		pkt = &PingrespPacket{}
+	case DISCONNECT:
+		pkt = &DisconnectPacket{}
+	default:
+		return nil, fmt.Errorf("%w: %d", ErrorInvalidPacketType, fh.Type)
+	}
+
+	e = pkt.Decode(r, fh.RemainLength)
+	if e != nil {
+		return nil, e
+	}
+	return pkt, nil
 }

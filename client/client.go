@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/hphuc15/mqttOQ/packet"
@@ -45,21 +46,18 @@ type ClientConfig struct {
 	Network     ClientNetwork
 	TLSConfig   *tls.Config
 	QUICConfig  *quic.Config
-}
 
-type ClientConfig2 struct {
-	ClientID string
-	Conn     quic.Conn
-	// Conn     net.Conn
-	// Session  session.SessionManager
-
+	// Option:
+	// Conn        *quic.Conn
 }
 
 type Client struct {
-	config ClientConfig
+	config  ClientConfig
+	state   *atomicState
+	writeMu sync.Mutex
+	// mu      sync.RWMutex
 	conn   *quic.Conn
 	stream *quic.Stream
-	state  *atomicState
 }
 
 const ClientDafaultClientID = "mqttOQ-client-%d"
@@ -93,25 +91,25 @@ var (
 	ErrSubscriptionFailed = errors.New("broker rejected subscription")
 )
 
-// func (c *Client) Connect(ctx context.Context) error {
-// 	if !c.state.CompareAndSwap(StateDisconnected, StateConnecting) {
-// 		return ErrAlreadyConnected
-// 	}
+func (c *Client) Connect(ctx context.Context) error {
+	if !c.state.CompareAndSwap(StateDisconnected, StateConnecting) {
+		return ErrAlreadyConnected
+	}
 
-// 	e := c.connectTransport(ctx)
-// 	if e != nil {
-// 		c.state.Set(StateDisconnected)
-// 		return e
-// 	}
+	e := c.connectTransport(ctx)
+	if e != nil {
+		c.state.Set(StateDisconnected)
+		return e
+	}
 
-// 	c.state.Set(StateConnected)
+	c.state.Set(StateConnected)
 
-// 	c.clo
-
-// 	return nil
-// }
+	return nil
+}
 
 // connectTransport performs the QUIC dial and sends the MQTT CONNECT packet.
+// Note: this func wait for received CONNACK packet then the client can be send next packet.
+// I want to reduce latency of this so i will refactor to async
 func (c *Client) connectTransport(ctx context.Context) error {
 	tlsConfig := c.config.TLSConfig
 	if tlsConfig == nil {
