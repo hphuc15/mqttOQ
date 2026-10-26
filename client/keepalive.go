@@ -42,7 +42,7 @@ func (c *Client) keepAliveLoop(interval time.Duration) {
 			// Send PINGREQ
 			if err := c.sendControlPacket(&packet.PingreqPacket{}); err != nil {
 				// Transport error: trigger disconnect and exit.
-				c.handleUnexpectedDisconnect()
+				c.handleUnexpectedDisconnect(err)
 				return
 			}
 
@@ -53,7 +53,7 @@ func (c *Client) keepAliveLoop(interval time.Duration) {
 
 			case <-time.After(interval):
 				// Timeout: broker did not respond.
-				c.handleUnexpectedDisconnect()
+				c.handleUnexpectedDisconnect(ErrPingTimeout)
 				return
 
 			case <-c.closeCh:

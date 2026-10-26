@@ -43,14 +43,28 @@ type ClientNetwork struct {
 	EnableMultiStream    bool
 }
 
+// OnConnectHandler is invoked when the client successfully establishes an initial connection
+// or reconnects to the MQTT broker.
+type OnConnectHandler func(c *Client)
+
+// OnConnectionLostHandler is invoked when an active connection to the broker is lost unexpectedly.
+type OnConnectionLostHandler func(c *Client, err error)
+
+// OnReconnectHandler is invoked immediately before each auto-reconnection attempt.
+// The attempt parameter is 1-based (1, 2, 3, ...).
+type OnReconnectHandler func(c *Client, attempt int)
+
 type ClientConfig struct {
-	Broker               ClientBroker
-	Credentials          ClientCredentials
-	Session              ClientSession
-	Network              ClientNetwork
-	TLSConfig            *tls.Config
-	QUICConfig           *quic.Config
+	Broker                ClientBroker
+	Credentials           ClientCredentials
+	Session               ClientSession
+	Network               ClientNetwork
+	TLSConfig             *tls.Config
+	QUICConfig            *quic.Config
 	DefaultMessageHandler MessageHandler
+	OnConnect             OnConnectHandler
+	OnConnectionLost      OnConnectionLostHandler
+	OnReconnect           OnReconnectHandler
 }
 
 // streamRW is the minimal io interface required by sendPacket and readLoop.
@@ -91,6 +105,11 @@ type Client struct {
 	opener     streamOpener
 	dataMu     sync.Mutex
 	dataStream streamRW
+
+	callbackMu       sync.RWMutex
+	onConnect        OnConnectHandler
+	onConnectionLost OnConnectionLostHandler
+	onReconnect      OnReconnectHandler
 }
 
 const (
@@ -130,14 +149,17 @@ func NewClient(config ClientConfig) *Client {
 	}
 
 	return &Client{
-		config:        config,
-		state:         newAtomicState(StateDisconnected),
-		dispatcher:    newDispatcher(config.DefaultMessageHandler),
-		closeCh:       make(chan struct{}),
-		stopCh:        make(chan struct{}),
-		ackWaiters:    make(map[uint16]chan packet.ControlPacket),
-		inflight:      newInflightManager(),
-		subscriptions: make(map[string]byte),
+		config:           config,
+		state:            newAtomicState(StateDisconnected),
+		dispatcher:       newDispatcher(config.DefaultMessageHandler),
+		closeCh:          make(chan struct{}),
+		stopCh:           make(chan struct{}),
+		ackWaiters:       make(map[uint16]chan packet.ControlPacket),
+		inflight:         newInflightManager(),
+		subscriptions:    make(map[string]byte),
+		onConnect:        config.OnConnect,
+		onConnectionLost: config.OnConnectionLost,
+		onReconnect:      config.OnReconnect,
 	}
 }
 
@@ -215,6 +237,54 @@ func (c *Client) SetDefaultMessageHandler(handler MessageHandler) {
 	c.dispatcher.setDefaultHandler(handler)
 }
 
+// SetOnConnect sets or updates the callback invoked when the client successfully connects or reconnects.
+func (c *Client) SetOnConnect(h OnConnectHandler) {
+	c.callbackMu.Lock()
+	defer c.callbackMu.Unlock()
+	c.onConnect = h
+}
+
+// SetOnConnectionLost sets or updates the callback invoked when an active connection is lost unexpectedly.
+func (c *Client) SetOnConnectionLost(h OnConnectionLostHandler) {
+	c.callbackMu.Lock()
+	defer c.callbackMu.Unlock()
+	c.onConnectionLost = h
+}
+
+// SetOnReconnect sets or updates the callback invoked before each auto-reconnect attempt.
+func (c *Client) SetOnReconnect(h OnReconnectHandler) {
+	c.callbackMu.Lock()
+	defer c.callbackMu.Unlock()
+	c.onReconnect = h
+}
+
+func (c *Client) invokeOnConnect() {
+	c.callbackMu.RLock()
+	h := c.onConnect
+	c.callbackMu.RUnlock()
+	if h != nil {
+		go h(c)
+	}
+}
+
+func (c *Client) invokeOnConnectionLost(err error) {
+	c.callbackMu.RLock()
+	h := c.onConnectionLost
+	c.callbackMu.RUnlock()
+	if h != nil {
+		go h(c, err)
+	}
+}
+
+func (c *Client) invokeOnReconnect(attempt int) {
+	c.callbackMu.RLock()
+	h := c.onReconnect
+	c.callbackMu.RUnlock()
+	if h != nil {
+		go h(c, attempt)
+	}
+}
+
 var (
 	ErrAlreadyConnected   = errors.New("client is already connected")
 	ErrNotConnected       = errors.New("client is not connected")
@@ -240,6 +310,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		c.startAcceptStreamLoop()
 	}
 	c.state.Set(StateConnected)
+	c.invokeOnConnect()
 
 	return nil
 }
@@ -389,7 +460,7 @@ func (c *Client) readLoop() {
 			case <-c.closeCh:
 				return
 			default:
-				c.handleUnexpectedDisconnect()
+				c.handleUnexpectedDisconnect(err)
 				return
 			}
 		}
@@ -471,12 +542,17 @@ func (c *Client) handleIncomingPacket(pkt packet.ControlPacket) {
 	}
 }
 
-func (c *Client) handleUnexpectedDisconnect() {
+func (c *Client) handleUnexpectedDisconnect(err error) {
 	c.cleanupTransport()
-	if c.state.Load() == StateClosed {
+	if !c.state.CompareAndSwap(StateConnected, StateDisconnected) {
+		if c.state.Load() == StateClosed {
+			return
+		}
+		c.state.Set(StateDisconnected)
 		return
 	}
-	c.state.Set(StateDisconnected)
+
+	c.invokeOnConnectionLost(err)
 
 	if c.config.Network.AutoReconnect {
 		c.triggerReconnect()

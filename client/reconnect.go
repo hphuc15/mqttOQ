@@ -83,6 +83,8 @@ func (c *Client) reconnectLoop() {
 			return
 		}
 
+		c.invokeOnReconnect(attempt + 1)
+
 		c.state.Set(StateConnecting)
 
 		timeout := c.config.Network.ConnectTimeout
@@ -111,6 +113,7 @@ func (c *Client) reconnectLoop() {
 			c.resendInflightMessages()
 
 			c.state.Set(StateConnected)
+			c.invokeOnConnect()
 			return
 		}
 
