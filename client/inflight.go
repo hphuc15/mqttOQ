@@ -31,11 +31,13 @@ type inflightMessage struct {
 type inflightManager struct {
 	mu       sync.RWMutex
 	messages map[uint16]*inflightMessage
+	inbound  map[uint16]struct{}
 }
 
 func newInflightManager() *inflightManager {
 	return &inflightManager{
 		messages: make(map[uint16]*inflightMessage),
+		inbound:  make(map[uint16]struct{}),
 	}
 }
 
@@ -121,4 +123,51 @@ func (m *inflightManager) retryAll(sendFn func(packet.ControlPacket) error) erro
 		}
 	}
 	return nil
+}
+
+// addInbound records an inbound QoS 2 packet ID awaiting PUBREL.
+// It returns true if the packet ID was not previously recorded (new message),
+// or false if it was already recorded (duplicate message).
+func (m *inflightManager) addInbound(pid uint16) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.inbound[pid]; exists {
+		return false
+	}
+	m.inbound[pid] = struct{}{}
+	return true
+}
+
+// hasInbound reports whether the given packet ID is currently tracked as an uncompleted inbound QoS 2 message.
+func (m *inflightManager) hasInbound(pid uint16) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	_, exists := m.inbound[pid]
+	return exists
+}
+
+// removeInbound deletes the tracked inbound QoS 2 packet ID upon receiving PUBREL.
+func (m *inflightManager) removeInbound(pid uint16) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	delete(m.inbound, pid)
+}
+
+// inboundCount returns the number of active inbound QoS 2 packets awaiting PUBREL.
+func (m *inflightManager) inboundCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return len(m.inbound)
+}
+
+// clearInbound removes all tracked inbound QoS 2 packet IDs.
+func (m *inflightManager) clearInbound() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.inbound = make(map[uint16]struct{})
 }

@@ -134,13 +134,22 @@ func (c *Client) acceptStreamLoop() {
 						Duplicate: pub.Config.DupFlag,
 					}
 
-					if pub.Config.QosLevel == packet.QoS1 {
+					switch pub.Config.QosLevel {
+					case packet.QoS1:
 						_ = (&packet.PubackPacket{PacketIdentifier: pub.PacketIdentifier}).Encode(s)
-					} else if pub.Config.QosLevel == packet.QoS2 {
+						go c.dispatcher.dispatch(c, msg)
+					case packet.QoS2:
+						isNew := true
+						if c.inflight != nil {
+							isNew = c.inflight.addInbound(pub.PacketIdentifier)
+						}
 						_ = (&packet.PubrecPacket{PacketIdentifier: pub.PacketIdentifier}).Encode(s)
+						if isNew {
+							go c.dispatcher.dispatch(c, msg)
+						}
+					default:
+						go c.dispatcher.dispatch(c, msg)
 					}
-
-					go c.dispatcher.dispatch(c, msg)
 				} else {
 					c.handleIncomingPacket(pkt)
 				}

@@ -409,15 +409,26 @@ func (c *Client) handleIncomingPacket(pkt packet.ControlPacket) {
 			Duplicate: p.Config.DupFlag,
 		}
 
-		// Acknowledge QoS 1 and QoS 2 inbound packets
-		if p.Config.QosLevel == packet.QoS1 {
+		// Acknowledge and dispatch based on QoS level
+		switch p.Config.QosLevel {
+		case packet.QoS1:
 			_ = c.sendPacket(&packet.PubackPacket{PacketIdentifier: p.PacketIdentifier})
-		} else if p.Config.QosLevel == packet.QoS2 {
-			_ = c.sendPacket(&packet.PubrecPacket{PacketIdentifier: p.PacketIdentifier})
-		}
+			go c.dispatcher.dispatch(c, msg)
 
-		// Dispatch message asynchronously so readLoop is never blocked
-		go c.dispatcher.dispatch(c, msg)
+		case packet.QoS2:
+			// QoS 2 inbound: track state to guarantee exactly-once delivery across retries/reconnects
+			isNew := true
+			if c.inflight != nil {
+				isNew = c.inflight.addInbound(p.PacketIdentifier)
+			}
+			_ = c.sendPacket(&packet.PubrecPacket{PacketIdentifier: p.PacketIdentifier})
+			if isNew {
+				go c.dispatcher.dispatch(c, msg)
+			}
+
+		default:
+			go c.dispatcher.dispatch(c, msg)
+		}
 
 	case *packet.PubackPacket:
 		if c.inflight != nil {
@@ -432,7 +443,10 @@ func (c *Client) handleIncomingPacket(pkt packet.ControlPacket) {
 		c.notifyAckWaiter(p.PacketIdentifier, p)
 
 	case *packet.PubrelPacket:
-		// QoS 2 inbound step 2: reply with PUBCOMP
+		// QoS 2 inbound step 2: reply with PUBCOMP and remove tracked inbound packet ID
+		if c.inflight != nil {
+			c.inflight.removeInbound(p.PacketIdentifier)
+		}
 		_ = c.sendPacket(&packet.PubcompPacket{PacketIdentifier: p.PacketIdentifier})
 
 	case *packet.PubcompPacket:
