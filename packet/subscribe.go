@@ -43,7 +43,7 @@ func (p *SubscribePacket) Encode(w io.Writer) error {
 	}
 
 	for _, sub := range p.Subscriptions {
-		e = writeString(&body, sub.TopicFilter)
+		e = encodeString(&body, sub.TopicFilter)
 		if e != nil {
 			return e
 		}

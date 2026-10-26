@@ -31,7 +31,7 @@ func (p *UnsubscribePacket) Encode(w io.Writer) error {
 	}
 
 	for _, topic := range p.TopicFilters {
-		e = writeString(&body, topic)
+		e = encodeString(&body, topic)
 		if e != nil {
 			return e
 		}
