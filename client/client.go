@@ -49,12 +49,20 @@ type ClientConfig struct {
 	DefaultMessageHandler MessageHandler
 }
 
+// streamRW is the minimal io interface required by sendPacket and readLoop.
+// Using an interface instead of *quic.Stream allows stream injection in tests.
+type streamRW interface {
+	Read(p []byte) (n int, err error)
+	Write(p []byte) (n int, err error)
+	Close() error
+}
+
 type Client struct {
 	config     ClientConfig
 	state      *atomicState
 	writeMu    sync.Mutex
 	conn       *quic.Conn
-	stream     *quic.Stream
+	stream     streamRW
 	dispatcher *messageDispatcher
 	closeCh    chan struct{}
 	closeOnce  sync.Once
@@ -157,6 +165,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 
 	c.startReaderLoop()
+	c.startKeepAlive()
 	c.state.Set(StateConnected)
 
 	return nil
