@@ -116,11 +116,6 @@ const (
 	ClientDefaultClientID       = "mqttOQ-client-%d"
 	ClientDefaultKeepAlive      = uint16(120) // seconds
 	ClientDefaultConnectTimeout = 10 * time.Second
-
-	// Backward-compatible aliases for legacy spellings
-	ClientDafaultClientID       = ClientDefaultClientID
-	ClientDafaultKeepAlive      = ClientDefaultKeepAlive
-	ClientDafaulConnectTimeout  = ClientDefaultConnectTimeout
 )
 
 func NewClient(config ClientConfig) *Client {
